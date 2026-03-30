@@ -1,0 +1,155 @@
+# Full reference config showing ALL available settings.
+#
+# Every field is shown here with comments.  In practice you only need
+# to specify the fields you care about -- sensible defaults are applied
+# for everything else.
+#
+# Usage:
+#   promptloom run examples/config_full.yaml
+#   promptloom run examples/config_full.yaml --dry-run
+#
+# Or from Python:
+#   from promptloom import run_experiment
+#   results = run_experiment("examples/config_full.yaml")
+
+# -- Experiment metadata (optional) ------------------------------------------
+experiment:
+  name: "Full Reference Experiment"
+  description: >
+    Shows every configurable field in promptloom.
+    Copy this file and delete what you don't need.
+
+# -- Global defaults (optional) ----------------------------------------------
+# Every field here can be overridden per-task.  If a task doesn't
+# specify a value, the default is used.
+defaults:
+  # LiteLLM model identifiers.  Any model supported by LiteLLM works:
+  #   "openai/gpt-4o"               OpenAI
+  #   "anthropic/claude-sonnet-4-20250514"  Anthropic
+  #   "gemini/gemini-2.0-flash"     Google Gemini
+  #   "ollama/llama3.3:70b"         Ollama (local)
+  models:
+    - "openai/gpt-4o"
+
+  # Path to the prompt template file (Markdown with {{PLACEHOLDER}} syntax).
+  # Relative paths are resolved from the directory containing this YAML file.
+  prompt_template: "prompt.md"
+
+  # System prompt prepended to messages.  Can be:
+  #   - A literal string:   "You are a helpful assistant."
+  #   - A file reference:   "file:prompts/system.md"
+  # When loaded from a file, {{PLACEHOLDER}} substitution is applied
+  # using the same params as the user prompt.
+  system_prompt: "You are a helpful assistant."
+
+  # Base output directory.  Each task gets a subdirectory named after
+  # its id.  Relative paths are resolved from the YAML file's directory.
+  output_dir: "output/"
+
+  # Maximum tokens in the LLM response.
+  max_completion_tokens: 4000
+
+  # Timeout in seconds per LLM API call.  null = no timeout.
+  timeout: 120
+
+  # Maximum number of concurrent LLM API calls.
+  max_concurrency: 5
+
+  # If true, unused parameters (params not referenced by any placeholder
+  # in the prompt template) do not trigger an interactive confirmation.
+  ignore_unused_params: false
+
+  # -- Response processing & validation pipeline (optional) -------------------
+  # These fields enable structured output handling with automatic
+  # correction.  All are optional and default to no processing.
+
+  # Response format / processor.  Controls how the raw LLM response is
+  # processed before validation:
+  #   "text" (default) -- no processing, raw string is kept as-is.
+  #   "json"           -- extract and parse JSON from the response.
+  #                       Handles raw JSON, markdown code fences, and
+  #                       heuristic extraction.
+  response_format: "json"
+
+  # Ordered list of validators to run on the processed response.
+  # Validators execute sequentially; the first failure stops the chain.
+  # Each validator is a dict with a "type" key.
+  #
+  # Built-in types:
+  #   json_schema  -- validate against a JSON Schema file.
+  #   custom       -- import a user-defined Python function.
+  #
+  # Custom validator signature:
+  #   def my_validator(data: Any, context: dict) -> ValidationResult:
+  #       # context has: task_id, params, model, attempt
+  #       if something_wrong(data):
+  #           return ValidationResult.fail("Error description")
+  #       return ValidationResult.ok(data)
+  validators:
+    - type: json_schema
+      schema: "schemas/summary_schema.json"
+    # - type: custom
+    #   callable: "mypackage.validators.check_integrity"
+
+  # Path to the correction prompt template.  Used when validation fails
+  # and max_corrections > 0.  Must contain a {{ERROR}} placeholder
+  # which will be replaced with the validator's error message.
+  correction_prompt: "correction.md"
+
+  # Maximum number of correction turns.  When validation fails, the
+  # assistant's response and a correction prompt (with the error details)
+  # are appended to the conversation, and the LLM is called again.
+  # 0 (default) = no correction loop.
+  max_corrections: 3
+
+  # Sampling temperature for the LLM.  null (default) = provider default.
+  # temperature: 0.7
+
+  # Number of independent runs per (task, model) pair.
+  # 1 (default) = single run.  Values > 1 produce numbered output files
+  # (e.g. task_model_001.json, task_model_002.json, ...).
+  # Useful for statistical experiments.
+  # repeat: 3
+
+# -- Tasks (required) ---------------------------------------------------------
+# Each task defines one prompt sent to one or more models.
+# All default fields can be overridden per-task.
+tasks:
+  # Task using all defaults -- only id and params are required.
+  - id: "structured-summary"
+    params:
+      # Literal string parameter:
+      instruction: >
+        Summarize the following document.  Return a JSON object with keys
+        "title" (string), "summary" (string), and "key_points" (array of strings).
+      # File reference parameter (reads single file content at runtime):
+      document: "file:data/sample.txt"
+      # Glob reference (reads ALL matching files, concatenated with headers):
+      #   "glob:data/*.json"          -- relative to YAML dir
+      #   "glob:/abs/path/*.json"     -- absolute path
+      # Files are sorted by name and formatted as:
+      #   === File 1: name.json ===
+      #   {content}
+      #
+      #   === File 2: name2.json ===
+      #   {content}
+      # files: "glob:data/*.json"
+
+  # Task with per-task overrides.
+  - id: "plain-summary"
+    params:
+      instruction: "Summarize this document in three sentences."
+      document: "This is an inline text that does not come from a file."
+    # Override defaults for this task only:
+    models:
+      - "openai/gpt-4o"
+      - "anthropic/claude-sonnet-4-20250514"
+    prompt_template: "prompt.md"
+    system_prompt: "You are a concise summarizer."
+    output_dir: "output_plain/"
+    max_completion_tokens: 2000
+    timeout: 300
+    # Disable validation for this task (plain text output):
+    response_format: "text"
+    validators: []
+    max_corrections: 0

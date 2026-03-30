@@ -1,0 +1,7 @@
+# Task
+
+{{INSTRUCTION}}
+
+# Document
+
+{{DOCUMENT}}

@@ -1,0 +1,41 @@
+# Example experiment configuration for promptloom.
+#
+# Usage:
+#   promptloom run examples/config.yaml
+#   promptloom run examples/config.yaml --dry-run
+#
+# Or from Python:
+#   from promptloom import run_experiment
+#   results = run_experiment("examples/config.yaml")
+
+experiment:
+  name: "Example Experiment"
+  description: "Demonstrates the basic config structure."
+
+# Global defaults applied to all tasks unless overridden.
+defaults:
+  models:
+    - "openai/gpt-4o"
+  prompt_template: "prompt.md"
+  system_prompt: "You are a helpful assistant."
+  output_dir: "output/"
+  max_completion_tokens: 4000
+  timeout: 120
+  max_concurrency: 5
+  ignore_unused_params: false
+
+tasks:
+  - id: "summarize-doc-1"
+    params:
+      document: "file:data/sample.txt"
+      instruction: "Summarize the following document in three sentences."
+
+  - id: "summarize-doc-2"
+    params:
+      document: "This is an inline text that does not come from a file."
+      instruction: "Summarize the following document in three sentences."
+    # Per-task overrides:
+    models:
+      - "openai/gpt-4o"
+      - "anthropic/claude-sonnet-4-20250514"
+    timeout: 300

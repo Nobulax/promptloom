@@ -1,0 +1,49 @@
+# Example experiment with JSON validation and correction loop.
+#
+# This configuration demonstrates the response processing and validation
+# pipeline.  The LLM is asked to produce structured JSON, which is then:
+#
+# 1. Extracted from the response (handles markdown code fences).
+# 2. Validated against a JSON Schema.
+# 3. On validation failure, a correction prompt is sent to the LLM
+#    with the error details, and it gets another chance (up to 3 times).
+#
+# Usage:
+#   promptloom run examples/config_with_validation.yaml
+#
+# Or from Python:
+#   from promptloom import run_experiment
+#   results = run_experiment("examples/config_with_validation.yaml")
+
+experiment:
+  name: "Structured Output Experiment"
+  description: >
+    Demonstrates JSON response processing, schema validation,
+    and the multi-turn correction loop.
+
+defaults:
+  models:
+    - "openai/gpt-4o"
+  prompt_template: "prompt_structured.md"
+  system_prompt: "You are a helpful assistant that always responds with valid JSON."
+  output_dir: "output_structured/"
+  max_completion_tokens: 4000
+  timeout: 120
+  max_concurrency: 5
+  ignore_unused_params: false
+
+  # -- Response processing & validation pipeline --
+  response_format: "json"
+  validators:
+    - type: json_schema
+      schema: "schemas/summary_schema.json"
+  correction_prompt: "correction.md"
+  max_corrections: 3
+
+tasks:
+  - id: "structured-summary-1"
+    params:
+      document: "file:data/sample.txt"
+      instruction: >
+        Summarize the following document.  Return a JSON object with keys
+        "title" (string), "summary" (string), and "key_points" (array of strings).

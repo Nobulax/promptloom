@@ -1,0 +1,47 @@
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "promptloom"
+version = "0.1.0"
+description = "A toolkit for batch LLM API calls driven by YAML configuration."
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [
+    {name = "Julius Vernie"},
+]
+keywords = ["llm", "batch", "prompt", "yaml", "litellm", "api", "validation"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Typing :: Typed",
+]
+dependencies = [
+    "litellm>=1.0",
+    "pyyaml>=6.0",
+    "python-dotenv>=1.0",
+    "click>=8.0",
+    "jsonschema>=4.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.4", "pytest-asyncio>=0.23"]
+
+[project.urls]
+Homepage = "https://github.com/Nobulax/promptloom"
+Repository = "https://github.com/Nobulax/promptloom"
+Issues = "https://github.com/Nobulax/promptloom/issues"
+
+[project.scripts]
+promptloom = "promptloom.cli:main"
