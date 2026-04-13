@@ -201,14 +201,8 @@ def load_config(
 
         output_dir = entry.get("output_dir")
         if not output_dir:
-            resolved_base = Path(default_output_dir)
-            if not resolved_base.is_absolute():
-                resolved_base = base_dir / resolved_base
-            output_dir = str(resolved_base / task_id)
-        else:
-            od = Path(output_dir)
-            if not od.is_absolute():
-                output_dir = str(base_dir / od)
+            # Build default: <default_output_dir>/<task_id>
+            output_dir = str(Path(default_output_dir) / task_id)
 
         max_tokens = entry.get("max_completion_tokens", default_max_tokens)
         timeout = entry.get("timeout", default_timeout)

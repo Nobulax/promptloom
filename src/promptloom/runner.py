@@ -126,6 +126,8 @@ async def _execute_single(
     # Derive a filesystem-safe model label.
     model_label = model.replace("/", "_").replace(":", "_")
     output_dir = Path(task.output_dir)
+    if not output_dir.is_absolute() and base_dir is not None:
+        output_dir = base_dir / output_dir
     ext = ".json" if task.response_format == "json" else ".txt"
     if task.repeat > 1:
         output_path = output_dir / f"{task.id}_{model_label}_{run_number:03d}{ext}"
@@ -496,6 +498,8 @@ async def _run_experiment_async(
     report_dir = config.base_dir
     if config.tasks:
         first_output = Path(config.tasks[0].output_dir)
+        if not first_output.is_absolute():
+            first_output = config.base_dir / first_output
         report_dir = first_output.parent
 
     report_path = save_report_yaml(results, report_dir, config.config_path.name)
