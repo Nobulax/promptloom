@@ -3,9 +3,13 @@
 Two independent checks are performed before an experiment run:
 
 1. **Model validation** -- verifies that each unique model name is
-   recognised by LiteLLM and that the required API keys / environment
-   variables are set for the model's provider.  This check is instant,
-   free, and makes **no API calls**.
+   recognised by LiteLLM (local registry) **or** available at the
+   provider (remote check), and that the required API keys /
+   environment variables are set.  For models not in litellm's static
+   registry, a lightweight ``GET /v1/models`` (or equivalent) call is
+   made to the provider to confirm availability.  This remote check
+   is **free** (no tokens consumed) and **fast** (results are cached
+   per provider).
 2. **Placeholder validation** -- ensures that every ``{{PLACEHOLDER}}``
    in each task's prompt template has a corresponding parameter, and
    warns about unused parameters.
@@ -16,9 +20,13 @@ the user sees all problems at once.
 
 from __future__ import annotations
 
+import json as _json
+import os
+import urllib.request
+import urllib.error
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Set
 
 import litellm
 
@@ -36,14 +44,17 @@ class ModelCheckResult:
     """Result of a single model validation check.
 
     :param model: The LiteLLM model identifier that was checked.
-    :param ok: ``True`` if the model name is recognised and the required
-        environment variables are set.
+    :param ok: ``True`` if the model passed validation (or passed with
+        warnings).  ``False`` only for fatal issues (e.g. missing API key).
     :param error: Error message if the check failed, ``None`` otherwise.
+    :param warning: Warning message for non-fatal issues (e.g. model not
+        in litellm's static registry but may still work at runtime).
     """
 
     model: str
     ok: bool
     error: Optional[str] = None
+    warning: Optional[str] = None
 
 
 @dataclass
@@ -131,13 +142,16 @@ class PreflightReport:
     @property
     def has_warnings(self) -> bool:
         """Return ``True`` if any check produced a non-fatal warning."""
+        model_warnings = any(
+            r.warning for r in self.model_results
+        )
         placeholder_warnings = any(
             r.has_warnings for r in self.placeholder_results
         )
         validation_warnings = any(
             r.has_warnings for r in self.validation_config_results
         )
-        return placeholder_warnings or validation_warnings
+        return model_warnings or placeholder_warnings or validation_warnings
 
     @property
     def model_error_count(self) -> int:
@@ -157,13 +171,144 @@ class PreflightReport:
         )
 
     @property
+    def model_warning_count(self) -> int:
+        """Number of models with non-fatal warnings."""
+        return sum(1 for r in self.model_results if r.warning)
+
+    @property
     def warning_count(self) -> int:
-        """Number of tasks with any warnings."""
+        """Total number of checks with any warnings."""
+        mw = self.model_warning_count
         pw = sum(1 for r in self.placeholder_results if r.has_warnings)
         vw = sum(
             1 for r in self.validation_config_results if r.has_warnings
         )
-        return pw + vw
+        return mw + pw + vw
+
+
+# ---------------------------------------------------------------------------
+# Remote provider model-list helpers
+# ---------------------------------------------------------------------------
+
+# Module-level cache: provider key → set of model IDs.
+_provider_model_cache: Dict[str, Set[str]] = {}
+
+# Timeout (seconds) for the lightweight model-list GET request.
+_PROVIDER_LIST_TIMEOUT = 10
+
+
+def _fetch_openrouter_models(api_key: Optional[str] = None) -> Set[str]:
+    """Fetch available model IDs from OpenRouter's ``/api/v1/models``.
+
+    :param api_key: OpenRouter API key (reads ``OPENROUTER_API_KEY`` from
+        the environment if not provided).
+    :returns: A set of model IDs (e.g. ``{"deepseek/deepseek-v3.2", …}``).
+    :raises Exception: On any network / parsing error.
+    """
+    url = "https://openrouter.ai/api/v1/models"
+    key = api_key or os.environ.get("OPENROUTER_API_KEY", "")
+    req = urllib.request.Request(url)
+    if key:
+        req.add_header("Authorization", f"Bearer {key}")
+    with urllib.request.urlopen(req, timeout=_PROVIDER_LIST_TIMEOUT) as resp:
+        data = _json.loads(resp.read().decode())
+    return {m["id"] for m in data.get("data", [])}
+
+
+def _fetch_ollama_models(
+    api_base: Optional[str] = None,
+    api_key: Optional[str] = None,
+) -> Set[str]:
+    """Fetch available model names from an Ollama server.
+
+    Tries the ``/api/tags`` endpoint (native Ollama) first, then falls
+    back to ``/v1/models`` (OpenAI-compatible shim).
+
+    :param api_base: Ollama server base URL (reads ``OLLAMA_API_BASE``
+        from the environment if not provided).
+    :param api_key: Ollama API key, if the server requires one (reads
+        ``OLLAMA_API_KEY`` from the environment if not provided).
+    :returns: A set of model names.
+    :raises Exception: On any network / parsing error.
+    """
+    base = (api_base or os.environ.get("OLLAMA_API_BASE", "")).rstrip("/")
+    if not base:
+        raise ValueError("OLLAMA_API_BASE not set")
+    key = api_key or os.environ.get("OLLAMA_API_KEY", "")
+
+    # Try native Ollama endpoint first.
+    for endpoint, extract in [
+        (f"{base}/api/tags", lambda d: {m["name"] for m in d.get("models", [])}),
+        (f"{base}/v1/models", lambda d: {m["id"] for m in d.get("data", [])}),
+    ]:
+        try:
+            req = urllib.request.Request(endpoint)
+            if key:
+                req.add_header("Authorization", f"Bearer {key}")
+            with urllib.request.urlopen(
+                req, timeout=_PROVIDER_LIST_TIMEOUT
+            ) as resp:
+                data = _json.loads(resp.read().decode())
+            return extract(data)
+        except (urllib.error.URLError, ValueError, KeyError):
+            continue
+
+    raise RuntimeError(f"Could not fetch model list from Ollama at {base}")
+
+
+def _fetch_provider_models(provider: str) -> Set[str]:
+    """Fetch and cache the model list for a known provider.
+
+    Returns a cached result on subsequent calls for the same provider.
+
+    :param provider: The litellm provider prefix (e.g. ``"openrouter"``
+        or ``"ollama"``).
+    :returns: Set of model identifiers available at the provider.
+    :raises Exception: On network / parsing errors (caller should catch).
+    """
+    if provider in _provider_model_cache:
+        return _provider_model_cache[provider]
+
+    if provider == "openrouter":
+        models = _fetch_openrouter_models()
+    elif provider == "ollama":
+        models = _fetch_ollama_models()
+    else:
+        raise ValueError(f"No model-list fetcher for provider: {provider}")
+
+    _provider_model_cache[provider] = models
+    return models
+
+
+def _check_model_at_provider(model: str) -> Optional[bool]:
+    """Check if a model exists at its provider via the model-list API.
+
+    :param model: Full litellm model identifier (e.g.
+        ``"openrouter/deepseek/deepseek-v3.2"``).
+    :returns:
+        - ``True`` if the model was confirmed available.
+        - ``False`` if the provider was reachable but the model was
+          **not** found.
+        - ``None`` if the remote check could not be performed (unknown
+          provider, network error, etc.).
+    """
+    # Supported providers and how to derive the provider model ID.
+    if model.startswith("openrouter/"):
+        provider = "openrouter"
+        # Strip the "openrouter/" prefix → e.g. "deepseek/deepseek-v3.2"
+        provider_model_id = model[len("openrouter/"):]
+    elif model.startswith("ollama/"):
+        provider = "ollama"
+        provider_model_id = model[len("ollama/"):]
+    else:
+        return None  # Provider not supported for remote check.
+
+    try:
+        available = _fetch_provider_models(provider)
+    except Exception:
+        return None  # Network error — can't verify.
+
+    return provider_model_id in available
 
 
 # ---------------------------------------------------------------------------
@@ -173,24 +318,32 @@ class PreflightReport:
 def _check_single_model(model: str) -> ModelCheckResult:
     """Validate a model name and its required environment variables.
 
-    Uses :func:`litellm.get_model_info` to verify that the model name
-    is recognised by LiteLLM, and :func:`litellm.validate_environment`
-    to confirm that the required API keys / env vars are set.
+    Uses a **two-tier** approach:
 
-    This check is **instant**, **free**, and makes **no API calls**.
+    1. **Local (instant):** :func:`litellm.get_model_info` checks the
+       model against litellm's built-in registry.
+    2. **Remote (lightweight):** If Tier 1 fails, queries the provider's
+       model-list endpoint (e.g. ``GET /v1/models``) to confirm the
+       model actually exists.  This is free (no tokens consumed) and
+       fast (cached per provider).
 
-    :param model: LiteLLM model identifier (e.g. ``"gemini/gemini-2.0-flash"``).
+    Additionally, :func:`litellm.validate_environment` confirms the
+    required API keys / env vars are set.
+
+    :param model: LiteLLM model identifier (e.g. ``"openrouter/deepseek/deepseek-v3.2"``).
     :returns: A :class:`ModelCheckResult` indicating success or failure.
     """
     errors: List[str] = []
+    warning: Optional[str] = None
 
-    # 1. Verify the model name is recognised by litellm
+    # Tier 1: local litellm registry check.
+    model_known = True
     try:
         litellm.get_model_info(model)
-    except Exception as exc:
-        errors.append(f"Unknown model: {exc}")
+    except Exception:
+        model_known = False
 
-    # 2. Verify required API keys / env vars are set
+    # Environment / API key check.
     try:
         env_info = litellm.validate_environment(model)
         missing_keys = env_info.get("missing_keys", [])
@@ -202,9 +355,37 @@ def _check_single_model(model: str) -> ModelCheckResult:
         errors.append(f"Environment validation error: {exc}")
 
     if errors:
+        if not model_known:
+            errors.insert(0, "Not in litellm model registry")
         return ModelCheckResult(
             model=model, ok=False, error="; ".join(errors)
         )
+
+    if not model_known:
+        # Tier 2: remote provider model-list check.
+        remote_result = _check_model_at_provider(model)
+
+        if remote_result is True:
+            # Confirmed available at provider — pass.
+            return ModelCheckResult(model=model, ok=True)
+
+        if remote_result is False:
+            # Provider was reachable but model not found — fail.
+            return ModelCheckResult(
+                model=model,
+                ok=False,
+                error="Model not found at provider (not in litellm "
+                      "registry and not listed by provider's model API)",
+            )
+
+        # remote_result is None — could not verify (network error or
+        # unsupported provider).  Downgrade to warning.
+        warning = (
+            "Not in litellm model registry and could not verify "
+            "at provider (may still work at runtime)"
+        )
+        return ModelCheckResult(model=model, ok=True, warning=warning)
+
     return ModelCheckResult(model=model, ok=True)
 
 
@@ -379,7 +560,10 @@ def run_preflight(
     are executed.  The report contains all results so the caller can
     decide whether to proceed.
 
-    This function is **instant**, **free**, and makes **no API calls**.
+    For models not found in litellm's local registry, a lightweight
+    ``GET /v1/models`` call may be made to the provider to confirm
+    availability.  This remote check is **free** (no tokens consumed)
+    and results are **cached** per provider.
 
     :param config: The experiment configuration.
     :param skip_model_check: If ``True``, skip the model validation
@@ -417,7 +601,9 @@ def print_preflight_report(report: PreflightReport) -> None:
         print("\nPre-check 1: Model validation")
         print("-" * 40)
         for result in report.model_results:
-            if result.ok:
+            if result.ok and result.warning:
+                print(f"  [WARN] {result.model}: {result.warning}")
+            elif result.ok:
                 print(f"  [PASS] {result.model}")
             else:
                 print(f"  [FAIL] {result.model}: {result.error}")
@@ -474,7 +660,15 @@ def print_preflight_report(report: PreflightReport) -> None:
             end="",
         )
     print()
-    print(f"  Warnings: {total_warnings}")
+    if report.model_warning_count:
+        print(f"  Warnings: {total_warnings}"
+              f" ({report.model_warning_count} model)", end="")
+        remaining = total_warnings - report.model_warning_count
+        if remaining:
+            print(f" ({remaining} other)", end="")
+        print()
+    else:
+        print(f"  Warnings: {total_warnings}")
     if total_errors:
         print("  --> Run CANCELLED due to errors.")
     elif total_warnings:

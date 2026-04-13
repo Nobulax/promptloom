@@ -31,7 +31,9 @@ promptloom/
 │
 ├── tests/
 │   ├── test_config.py             # Config loading + new validation fields
+│   ├── test_preflight.py          # Two-tier model validation, provider checks
 │   ├── test_prompt.py             # Prompt assembly, placeholder checks
+│   ├── test_report.py             # Report generation, failed-config YAML
 │   └── test_validation.py         # JSON extraction, validators, pipeline
 │
 └── examples/
@@ -81,6 +83,7 @@ YAML config
 - `TaskConfig` dataclass: all per-task settings (prompt_template, system_prompt,
   models, response_format, validators, correction_prompt, max_corrections, etc.)
 - `ExperimentConfig` dataclass: experiment metadata + list of TaskConfig + base_dir
+  + `_raw_yaml` snapshot for faithful failed-config regeneration
 - `load_config(path)`: parses YAML, merges `defaults` with per-task overrides
 
 ### `prompt.py`
@@ -109,14 +112,22 @@ YAML config
 - `run_experiment_async(config)`: async entry point (accepts pre-loaded ExperimentConfig)
 
 ### `preflight.py`
-- Model validation: `litellm.get_model_info()` + `litellm.validate_environment()` (no API calls)
+- **Two-tier model validation**:
+  - Tier 1 (local): `litellm.get_model_info()` — checks static model registry
+  - Tier 2 (remote): if Tier 1 fails, queries provider's model-list API
+    (OpenRouter `GET /v1/models`, Ollama `GET /api/tags`).  Cached per provider.
+  - `_fetch_openrouter_models()`, `_fetch_ollama_models()`, `_fetch_provider_models()` — remote helpers
+  - `_check_model_at_provider(model)` → `True` (found) / `False` (not found) / `None` (can't check)
+- `litellm.validate_environment()` — checks API key / env vars
+- `ModelCheckResult`: has `ok`, `error`, `warning` fields
 - Placeholder validation: checks template placeholders vs task params
 - Validation config: checks response_format, correction_prompt existence/{{ERROR}}, schema files, validator specs
-- `PreflightReport`: aggregated results with `.has_errors` / `.has_warnings`
+- `PreflightReport`: aggregated results with `.has_errors` / `.has_warnings` / `.model_warning_count`
 
 ### `report.py`
 - `save_report_yaml()`: timestamped YAML report of all results
-- `generate_failed_yaml()`: YAML config with only failed (task, model) pairs for re-runs
+- `generate_failed_yaml()`: YAML config with only failed (task, model) pairs for re-runs;
+  uses `ExperimentConfig._raw_yaml` to preserve original config structure
 
 ### `cli.py`
 - Click-based CLI: `promptloom run CONFIG [--dry-run] [--skip-preflight] [--model-timeout N]`
@@ -155,9 +166,10 @@ def my_validator(data: Any, context: dict) -> ValidationResult:
 ## Testing
 
 ```bash
-.venv/bin/pytest tests/ -v    # 77 tests, all pure unit tests (no API calls)
+.venv/bin/pytest tests/ -v    # 109 tests, all pure unit tests (no API calls)
 ```
 
-Tests cover: config loading (incl. new validation fields), prompt assembly,
-JSON extraction, validator loading/chaining, ValidationResult, import helper.
-Runner/preflight tests require mocking litellm and are not yet implemented.
+Tests cover: config loading (incl. validation fields), prompt assembly,
+JSON extraction, validator loading/chaining, ValidationResult, import helper,
+two-tier model validation (with mocked litellm + HTTP), provider model caching,
+report generation, and failed-config YAML regeneration.

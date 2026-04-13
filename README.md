@@ -32,9 +32,11 @@ re-generation configs for any failed runs.
 - **Multi-turn correction loop** — when validation fails, automatically
   send the error report back to the LLM and retry (configurable number
   of correction turns).
-- **Three-phase pre-flight checks** (instant, free, no API calls):
-  1. *Model validation* — verifies model names and API key availability
-     using LiteLLM's built-in model registry.
+- **Three-phase pre-flight checks**:
+  1. *Model validation* — two-tier approach: first checks litellm's
+     built-in registry (instant, local); if unknown, queries the
+     provider's model-list API (e.g. OpenRouter, Ollama) to confirm
+     availability.  Also verifies API key availability.
   2. *Placeholder validation* — ensures every `{{PLACEHOLDER}}` in each
      template has a matching parameter; warns about unused parameters.
   3. *Validation config check* — verifies response format, correction
@@ -303,13 +305,16 @@ output/
 
 ## Pre-flight checks
 
-Before dispatching API calls, three instant checks run (no API calls,
-no cost):
+Before dispatching API calls, three checks run:
 
-1. **Model validation** — uses LiteLLM's built-in model registry
-   (`litellm.get_model_info` and `litellm.validate_environment`) to
-   verify that each model name is recognised and the required API
-   keys / environment variables are set.
+1. **Model validation** — uses a two-tier approach.  First, litellm's
+   built-in model registry is checked (instant, local).  If the model
+   is not in litellm's static registry (common for aggregator providers
+   like OpenRouter), a lightweight `GET /v1/models` call is made to
+   the provider to confirm the model actually exists.  This remote
+   check is free (no tokens consumed), fast, and cached per provider.
+   Also verifies that the required API keys / environment variables
+   are set.
 2. **Placeholder validation** — for each task, verifies that every
    `{{PLACEHOLDER}}` in the prompt template has a matching key in the
    task's `params`.  Missing params are fatal errors.  Unused params

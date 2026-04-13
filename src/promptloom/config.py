@@ -6,6 +6,7 @@ with global defaults, and producing typed configuration objects.
 
 from __future__ import annotations
 
+import copy
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
@@ -80,6 +81,9 @@ class ExperimentConfig:
         template) do not trigger an interactive confirmation prompt.
     :param base_dir: Directory used to resolve relative paths in the config.
     :param config_path: Path to the original YAML config file.
+    :param _raw_yaml: Snapshot of the raw YAML dict as loaded from the
+        config file.  Used by :func:`report.generate_failed_yaml` to
+        produce output that mirrors the original config structure.
     """
 
     name: str
@@ -89,6 +93,7 @@ class ExperimentConfig:
     ignore_unused_params: bool
     base_dir: Path
     config_path: Path
+    _raw_yaml: Dict[str, Any] = field(default_factory=dict, repr=False)
 
     @property
     def all_models(self) -> List[str]:
@@ -247,4 +252,5 @@ def load_config(
         ignore_unused_params=default_ignore_unused,
         base_dir=base_dir,
         config_path=config_path,
+        _raw_yaml=copy.deepcopy(raw),
     )
