@@ -66,13 +66,17 @@ YAML config
               Build messages [system?, user]
               Loop (max 1 + max_corrections attempts):
                 litellm.acompletion(messages) → raw content
+                Save raw response to temp/ (every attempt)
                 processor(content) → processed data
                 run_validators(processed, context) → ValidationResult
                 If fail + corrections left:
                   Append assistant + correction prompt to messages
                   Continue
-                Else:
-                  Save output, return result dict
+                If fail + no corrections left:
+                  Return failed (output stays in temp/ only)
+                If success:
+                  Save validated output to main output dir
+                  Return result dict
 
   → save_report_yaml() + generate_failed_yaml()
 ```
@@ -166,7 +170,7 @@ def my_validator(data: Any, context: dict) -> ValidationResult:
 ## Testing
 
 ```bash
-.venv/bin/pytest tests/ -v    # 109 tests, all pure unit tests (no API calls)
+.venv/bin/pytest tests/ -v    # 114 tests, all pure unit tests (no API calls)
 ```
 
 Tests cover: config loading (incl. validation fields), prompt assembly,

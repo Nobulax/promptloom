@@ -115,8 +115,10 @@ async def _execute_single(
         - ``model`` -- the model identifier.
         - ``run_number`` -- the run index (1-based).
         - ``status`` -- ``"success"`` or ``"failed"``.
-        - ``output_path`` -- path to the saved output (on success or
-          validation failure).
+        - ``output_path`` -- on success, path to the validated output
+          in the main output directory.  On failure, path to the last
+          attempt in the ``temp/`` subdirectory (or absent for API errors
+          where no response was received).
         - ``error_type`` / ``error`` -- error details (on failure).
         - ``duration_s`` -- wall-clock seconds for the full execution
           (including all correction turns).
@@ -130,9 +132,11 @@ async def _execute_single(
         output_dir = base_dir / output_dir
     ext = ".json" if task.response_format == "json" else ".txt"
     if task.repeat > 1:
-        output_path = output_dir / f"{task.id}_{model_label}_{run_number:03d}{ext}"
+        basename = f"{task.id}_{model_label}_{run_number:03d}"
     else:
-        output_path = output_dir / f"{task.id}_{model_label}{ext}"
+        basename = f"{task.id}_{model_label}"
+    output_path = output_dir / f"{basename}{ext}"
+    temp_dir = output_dir / "temp"
 
     # Build initial message history.
     messages: List[Dict[str, str]] = []
@@ -189,6 +193,10 @@ async def _execute_single(
                     if val is not None:
                         total_usage[key] += val
 
+            # Save every attempt to temp/ for debugging.
+            temp_path = temp_dir / f"{basename}_attempt{attempt + 1:02d}{ext}"
+            _save_output(temp_path, content, content, task.response_format)
+
             # -- Response processing ------------------------------------------
             try:
                 processed = processor(content)
@@ -209,18 +217,15 @@ async def _execute_single(
                     messages.append({"role": "user", "content": correction})
                     continue
 
-                # No corrections left — fail.
+                # No corrections left — fail.  Output stays in temp/ only.
                 duration = time.monotonic() - start
-                _save_output(
-                    output_path, content, content, task.response_format
-                )
                 return {
                     "task_id": task.id,
                     "model": model,
                     "status": "failed",
                     "error_type": "processing_error",
                     "error": error_msg,
-                    "output_path": str(output_path),
+                    "output_path": str(temp_path),
                     "duration_s": round(duration, 2),
                     "corrections_attempted": corrections_attempted,
                     "usage": total_usage,
@@ -257,18 +262,15 @@ async def _execute_single(
                         )
                         continue
 
-                    # No corrections left — fail (but still save output).
+                    # No corrections left — fail.  Output stays in temp/ only.
                     duration = time.monotonic() - start
-                    _save_output(
-                        output_path, content, processed, task.response_format
-                    )
                     return {
                         "task_id": task.id,
                         "model": model,
                         "status": "failed",
                         "error_type": "validation_error",
                         "error": vresult.error,
-                        "output_path": str(output_path),
+                        "output_path": str(temp_path),
                         "duration_s": round(duration, 2),
                         "corrections_attempted": corrections_attempted,
                         "usage": total_usage,
@@ -277,7 +279,7 @@ async def _execute_single(
                 # Validators may transform data.
                 processed = vresult.data
 
-            # -- Success! -----------------------------------------------------
+            # -- Success! Save validated output to main dir. ------------------
             duration = time.monotonic() - start
             _save_output(output_path, content, processed, task.response_format)
 
