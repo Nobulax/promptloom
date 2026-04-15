@@ -88,15 +88,15 @@ def generate_failed_yaml(
     """
     config_path = Path(config_path)
 
-    # -- Collect failed (task_id → [model, …]) pairs -------------------------
-    failed_by_task: Dict[str, List[str]] = {}
+    # -- Collect failed (task_id → {model: failure_count}) pairs --------------
+    failed_by_task: Dict[str, Dict[str, int]] = {}
     for task_block in results.get("tasks", []):
         task_id = task_block["id"]
         for model_result in task_block.get("models", []):
             if model_result["status"] != "success":
-                failed_by_task.setdefault(task_id, []).append(
-                    model_result["model"]
-                )
+                counts = failed_by_task.setdefault(task_id, {})
+                model = model_result["model"]
+                counts[model] = counts.get(model, 0) + 1
 
     if not failed_by_task:
         return None
@@ -112,18 +112,27 @@ def generate_failed_yaml(
         f"Re-run of failed tasks from {config_path.name}"
     )
 
-    # Remove ``models`` from defaults — each task will carry its own
-    # explicit list of failed models, so a default would be misleading.
-    if "defaults" in raw and "models" in raw["defaults"]:
-        del raw["defaults"]["models"]
+    # Remove ``models`` and ``repeat`` from defaults — each task will carry
+    # its own explicit list of failed models and repeat count, so defaults
+    # would be misleading or cause duplicate runs.
+    if "defaults" in raw:
+        raw["defaults"].pop("models", None)
+        raw["defaults"].pop("repeat", None)
 
-    # Filter tasks: keep only those with failures, override their models.
+    # Filter tasks: keep only those with failures, override their models
+    # and set repeat to the number of failed runs per model.
     filtered_tasks: List[Dict[str, Any]] = []
     for task_entry in raw.get("tasks", []):
         task_id = task_entry.get("id")
         if task_id in failed_by_task:
             task_copy = dict(task_entry)
-            task_copy["models"] = failed_by_task[task_id]
+            model_counts = failed_by_task[task_id]
+            task_copy["models"] = list(model_counts.keys())
+            max_failures = max(model_counts.values())
+            if max_failures > 1:
+                task_copy["repeat"] = max_failures
+            else:
+                task_copy.pop("repeat", None)
             filtered_tasks.append(task_copy)
 
     raw["tasks"] = filtered_tasks

@@ -7,4 +7,5 @@ build/
 dist/
 .pytest_cache/
 *.code-workspace
+MEMORY.md
 

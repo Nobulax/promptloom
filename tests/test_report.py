@@ -282,6 +282,152 @@ class TestSaveReportYaml:
 
 
 # ---------------------------------------------------------------------------
+# generate_failed_yaml with repeat
+# ---------------------------------------------------------------------------
+
+
+REPEAT_CONFIG_YAML = """\
+experiment:
+  name: "Repeat Experiment"
+
+defaults:
+  models:
+    - "openai/gpt-4o"
+    - "anthropic/claude-sonnet-4-20250514"
+  prompt_template: "prompt.md"
+  repeat: 5
+
+tasks:
+  - id: "task_a"
+    params:
+      text: "hello"
+  - id: "task_b"
+    params:
+      text: "world"
+"""
+
+# Simulate: task_a has gpt-4o failing 5 times and claude 3 times;
+# task_b has gpt-4o failing 1 time.
+REPEAT_FAIL_RESULTS = {
+    "tasks": [
+        {
+            "id": "task_a",
+            "models": [
+                {"model": "openai/gpt-4o", "status": "failed"},
+                {"model": "openai/gpt-4o", "status": "failed"},
+                {"model": "openai/gpt-4o", "status": "failed"},
+                {"model": "openai/gpt-4o", "status": "failed"},
+                {"model": "openai/gpt-4o", "status": "failed"},
+                {"model": "anthropic/claude-sonnet-4-20250514", "status": "success"},
+                {"model": "anthropic/claude-sonnet-4-20250514", "status": "success"},
+                {"model": "anthropic/claude-sonnet-4-20250514", "status": "failed"},
+                {"model": "anthropic/claude-sonnet-4-20250514", "status": "failed"},
+                {"model": "anthropic/claude-sonnet-4-20250514", "status": "failed"},
+            ],
+        },
+        {
+            "id": "task_b",
+            "models": [
+                {"model": "openai/gpt-4o", "status": "failed"},
+                {"model": "openai/gpt-4o", "status": "success"},
+                {"model": "openai/gpt-4o", "status": "success"},
+                {"model": "openai/gpt-4o", "status": "success"},
+                {"model": "openai/gpt-4o", "status": "success"},
+                {"model": "anthropic/claude-sonnet-4-20250514", "status": "success"},
+                {"model": "anthropic/claude-sonnet-4-20250514", "status": "success"},
+                {"model": "anthropic/claude-sonnet-4-20250514", "status": "success"},
+                {"model": "anthropic/claude-sonnet-4-20250514", "status": "success"},
+                {"model": "anthropic/claude-sonnet-4-20250514", "status": "success"},
+            ],
+        },
+    ],
+    "failures": 9,
+}
+
+
+@pytest.fixture()
+def repeat_config_path(tmp_path: Path) -> Path:
+    p = tmp_path / "repeat_config.yaml"
+    p.write_text(REPEAT_CONFIG_YAML, encoding="utf-8")
+    return p
+
+
+@pytest.fixture()
+def repeat_config(repeat_config_path: Path):
+    return load_config(repeat_config_path)
+
+
+class TestGenerateFailedYamlWithRepeat:
+    """Tests for generate_failed_yaml when repeat > 1."""
+
+    def test_deduplicates_models(self, repeat_config, repeat_config_path):
+        """Each model should appear exactly once, not once per failure."""
+        result = generate_failed_yaml(
+            repeat_config, REPEAT_FAIL_RESULTS, repeat_config_path
+        )
+        failed = yaml.safe_load(result.read_text(encoding="utf-8"))
+
+        task_a = next(t for t in failed["tasks"] if t["id"] == "task_a")
+        assert task_a["models"] == [
+            "openai/gpt-4o",
+            "anthropic/claude-sonnet-4-20250514",
+        ]
+
+    def test_sets_repeat_to_max_failure_count(
+        self, repeat_config, repeat_config_path
+    ):
+        """repeat should be the max failure count across models in that task."""
+        result = generate_failed_yaml(
+            repeat_config, REPEAT_FAIL_RESULTS, repeat_config_path
+        )
+        failed = yaml.safe_load(result.read_text(encoding="utf-8"))
+
+        # task_a: gpt failed 5x, claude failed 3x -> repeat: 5
+        task_a = next(t for t in failed["tasks"] if t["id"] == "task_a")
+        assert task_a["repeat"] == 5
+
+    def test_omits_repeat_when_single_failure(
+        self, repeat_config, repeat_config_path
+    ):
+        """When max failures is 1, repeat should be omitted (defaults to 1)."""
+        result = generate_failed_yaml(
+            repeat_config, REPEAT_FAIL_RESULTS, repeat_config_path
+        )
+        failed = yaml.safe_load(result.read_text(encoding="utf-8"))
+
+        # task_b: gpt failed 1x -> no repeat key needed
+        task_b = next(t for t in failed["tasks"] if t["id"] == "task_b")
+        assert "repeat" not in task_b
+
+    def test_removes_repeat_from_defaults(
+        self, repeat_config, repeat_config_path
+    ):
+        """repeat must not remain in defaults to avoid double-counting."""
+        result = generate_failed_yaml(
+            repeat_config, REPEAT_FAIL_RESULTS, repeat_config_path
+        )
+        failed = yaml.safe_load(result.read_text(encoding="utf-8"))
+        assert "repeat" not in failed.get("defaults", {})
+
+    def test_roundtrip_loadable_with_repeat(
+        self, repeat_config, repeat_config_path
+    ):
+        """The generated failed YAML with repeat should be loadable."""
+        result = generate_failed_yaml(
+            repeat_config, REPEAT_FAIL_RESULTS, repeat_config_path
+        )
+        reloaded = load_config(result)
+
+        task_a = next(t for t in reloaded.tasks if t.id == "task_a")
+        assert task_a.repeat == 5
+        assert len(task_a.models) == 2
+
+        task_b = next(t for t in reloaded.tasks if t.id == "task_b")
+        assert task_b.repeat == 1
+        assert task_b.models == ["openai/gpt-4o"]
+
+
+# ---------------------------------------------------------------------------
 # _raw_yaml on ExperimentConfig
 # ---------------------------------------------------------------------------
 
